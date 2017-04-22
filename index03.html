@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>web sql</title>
+</head>
+<body>
+
+<script>
+    var webSql = function (dbname) {
+        var db = openDatabase(dbname, '1.0.0','', 20 * 1024 * 1024);
+        return {
+            /**
+             * 返回数据库名
+             */
+            getDBName: function () {
+                return dbname;
+            },
+            /**
+             * 初始化数据库，如果需要则创建表
+             */
+            init: function (tableName, colums) {
+                this.switchTable(tableName);
+                colums.length > 0 ? this.createTable(colums) : '';
+                return this;
+            },
+            /**
+             * 创建表
+             * colums:[name:字段名,type:字段类型]
+             */
+            createTable:function(colums) {
+                var sql = "CREATE TABLE IF NOT EXISTS " + this._table, t;
+                if (colums instanceof Array && colums.length > 0) {
+                    t = [];
+                    for (var i in colums) {
+                        t.push(colums[i].name + ' ' + colums[i].type);
+                    }
+                    t = t.join(', ');
+                } else if (typeof colums == "object"){
+                    t += colums.name+' '+colums.type;
+                }
+                sql = sql + " (" + t + ")";
+                var that = this;
+                db.transaction(function(t) {
+                    // 执行真实的SQL查询
+                    t.executeSql(sql);
+                })
+            },
+            /**
+             * 切换表
+             */
+            switchTable: function (tableName) {
+                this._table = tableName;
+                return this;
+            },
+            /**
+             * 插入数据并执行回调函数，支持批量插入
+             * @param data   Array类型   每一组值均为Object类型，每一个Obejct的属性应为表的字段名，对应要保存的值
+             * @param callback   回调函数
+             * @returns {boolean}
+             */
+            insertData: function(data, callback) {
+                var that = this;
+                var sql = "INSERT INTO " + this._table;
+                if (data instanceof Array && data.length > 0) {
+                    var cols = [], qs = [];
+                    for (var i in data[0]) {
+                        cols.push(i);
+                        qs.push('?');
+                    }
+                    sql += " ("+cols.join(',')+") Values ("+qs.join(',')+")";
+                } else {
+                    return false;
+                }
+
+                var p = [], d = data, pLenth = 0, r = [];
+                for (var i = 0, dLength = d.length; i < dLength; i++) {
+                    var k = [];
+                    for (var j in d[i]) {
+                        k.push(d[i][j]);
+                    }
+                    p.push(k);
+                }
+                var tx;
+                var queue = function(b, result) {
+                    if (result){
+                        r.push(result.insertId || result.rowsAffected);
+                    }
+                    if (p.length > 0) {
+                        tx.executeSql(sql, p.shift(), queue, that.onfail);
+                    } else {
+                        callback && callback.call(this,r);
+                    }
+                };
+                // 根据情况控制事务提交或回滚
+                db.transaction(function(t) {
+                    tx = t;
+                    queue();
+                });
+
+            },
+            /**
+             * where语句，支持自写和以对象属性值对的形式
+             * @param where
+             * @returns {webSql}
+             */
+            where: function(where) {
+                if (typeof where === 'object') {
+                    var j = this.toArray(where);
+                    this._where = j.join(' and ');
+                } else if (typeof where === 'string') {
+                    this._where = where;
+                }
+                return this;
+            },
+            /**
+             * 更新数据，data为属性值对形式
+             * @param data
+             * @param callback
+             */
+            updateData: function(data, callback) {
+                var that = this;
+                var sql = "UPDATE " + this._table;
+                data = this.toArray(data).join(',');
+                sql += " SET " + data + " WHERE " + this._where;
+                this.doQuery(sql, callback);
+            },
+            /**
+             * 根据条件保存数据，如果存在则更新，不存在则插入数据
+             * @param data
+             * @param callback
+             */
+            saveData: function(data, callback) {
+                var sql = "SELECT * FROM " + this._table + " WHERE " + this._where;
+                var that = this;
+                this.doQuery(sql, function(r) {
+                    if (r.length > 0) {
+                        that.updateData(data, callback);
+                    } else {
+                        that.insertData([data], callback);
+                    }
+                });
+            },
+            /**
+             * 获取数据
+             * @param callback
+             */
+            getData: function (callback) {
+                var that = this;
+                var sql = "SELECT * FROM " + that._table;
+                that._where.length > 0 ? sql += " WHERE " + that._where : "";
+                that.doQuery(sql, callback);
+            },
+            /**
+             * 查询， 内部方法
+             * @param sql
+             * @param callback
+             */
+            doQuery: function (sql, callback) {
+              var that = this;
+              var a = [];
+              var bb = function (b, result) {
+                  if (result.rows.length) {
+                      for (var i = 0; i < result.rows.length; i++) {
+                          a.push(result.rows.item(i));
+                      }
+                  } else {
+                      a.push(result.rowsAffected);
+                  }
+                  callback && callback.call(that, a);
+              };
+              db.transaction(function (t) {
+                  t.executeSql(sql, [], bb, that.onfail);
+              });
+            },
+            /**
+             * 根据条件删除数据
+             * @param callback
+             */
+            deleteData: function (callback) {
+                var that = this;
+                var sql = "DELETE FROM " + that._table;
+                that._where.length > 0 ? sql += " WHERE " + that._where : '';
+                that.doQuery(sql);
+            },
+            /**
+             * 删除表
+             */
+            dropTable: function () {
+                var sql = "DROP TABLE IF EXISTS " + this._table;
+                this.doQuery(sql);
+            },
+            _where: '',
+            _error: '',
+            /**
+             *
+             * @param t
+             * @param e
+             */
+            onfail: function (t, e) {
+                this._error = e.message;
+                console.log('------sqlite:' + e.message);
+            },
+            /**
+             *
+             * @param obj
+             * @returns {Array}
+             */
+            toArray: function (obj) {
+                var t = [];
+                obj = obj || {};
+                if (obj) {
+                    for (var i in obj) {
+                        t.push(i + "='" + obj[i] + "'");
+                    }
+                }
+                return t;
+            }
+        };
+    };
+
+
+
+     var db = new webSql('testDB');
+
+     db.init('channel_list',[
+         {name:'id',type:'integer primary key autoincrement'},
+         {name:'name',type:'text'},
+         {name:'link',type:'text'},
+         {name:'cover',type:'text'},
+         {name:'updatetime',type:'integer'},
+         {name:'orders',type:'integer'}
+     ]);
+
+/*
+     db.init('feed_list',[
+     {name:'parentid',type:'integer'},
+     {name:'feed',type:'text'}
+     ]);
+ */
+     db.switchTable('channel_list').insertData([
+         {name:'aa', link:'htttp://www.john_3.com', cover:'张桓', updatetime: new Date().getTime(), orders:1},
+         {name:'bb', link:'yz30.com@aliyun.com', cover:'桓桓', updatetime: new Date().getTime(), orders:2},
+     ]);
+
+     db.where({name:'aa'}).getData(function(result){
+        console.log(result);//result为Array
+     });
+/*
+     db.where({name:'cc'}).deleteData(function(result){
+        console.log("删除条数:"+result[0]);//删除条数
+     });
+
+     db.where({name:'aa'}).saveData({link:'asdfasdfasdf'},function(result){
+        console.log(result);//影响条数
+     });
+*/
+
+
+</script>
+</body>
+</html>
