@@ -443,10 +443,4 @@ rows 为一个 SQLResultSetRowList 对象，代表数据库按顺序返回的行
 	    );
 	}
 
-## HTML5的WEB SQL DatabaseAPI ##
 
-**Example**
-
-	<script>
-		var webDb = function(dbname)
-	</script>
